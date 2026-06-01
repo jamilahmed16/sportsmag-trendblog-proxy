@@ -9,7 +9,7 @@ app.use(cors({ origin: '*', methods: ['POST', 'GET', 'OPTIONS'], allowedHeaders:
 app.use(express.json({ limit: '10mb' }));
 
 app.get('/', (req, res) => {
-  res.json({ status: 'TrendBlog AI Proxy is running', version: '3.1.0' });
+  res.json({ status: 'TrendBlog AI Proxy is running', version: '3.2.0' });
 });
 
 /* ================================================================
@@ -271,11 +271,11 @@ app.post('/generate', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Proxy v3.1 error:', error);
+    console.error('Proxy v3.2 error:', error);
     res.status(500).json({ error: 'Proxy error: ' + error.message });
   }
 });
 
 app.listen(PORT, () => {
-  console.log('TrendBlog AI Proxy v3.1 running on port ' + PORT);
+  console.log('TrendBlog AI Proxy v3.2 running on port ' + PORT);
 });
