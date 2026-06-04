@@ -27,13 +27,10 @@ app.get('/trends', async (req, res) => {
 
   try {
     // Google Trends — Realtime trending searches, Sports category, US
-    const ts  = Date.now();
     const url = 'https://serpapi.com/search.json?engine=google_trends_trending_now'
       + '&frequency=realtime'
       + '&geo=US'
-      + '&category=15'
-      + '&no_cache=true'
-      + '&_=' + ts
+      + '&category=15'  // 15 = Sports
       + '&api_key=' + serpKey;
 
     const r = await fetch(url);
@@ -91,40 +88,6 @@ function getFallbackTrends() {
     { name:'Topps Chrome World Cup 2026 cards',        vol:'50K+',  badge:'rising',   pct:'+500%',   started:'14h ago' }
   ];
 }
-
-/* ================================================================
-   ENDPOINT 1b — /serp — SERP analysis with PAA for any keyword
-   ================================================================ */
-app.post('/serp', async (req, res) => {
-  const { keyword } = req.body;
-  if (!keyword) return res.status(400).json({ error:'Missing keyword' });
-  try {
-    const serpKey  = process.env.SERP_API_KEY;
-    const braveKey = process.env.BRAVE_API_KEY;
-    const results = []; let paa = [], related = [], source = 'none';
-    if (serpKey) {
-      const url = 'https://serpapi.com/search.json?engine=google&q='
-        + encodeURIComponent(keyword)
-        + '&num=10&gl=us&hl=en&no_cache=true&api_key=' + serpKey;
-      const r = await fetch(url);
-      if (r.ok) {
-        const d = await r.json();
-        source = 'SerpAPI';
-        (d.organic_results||[]).slice(0,8).forEach(function(item) {
-          results.push({ title:item.title||'', url:item.link||'', description:item.snippet||'', position:item.position||0 });
-        });
-        paa     = (d.related_questions||[]).slice(0,7).map(function(q){ return { q:q.question||'', a:q.answer||q.snippet||'' }; });
-        related = (d.related_searches||[]).slice(0,6).map(function(s){ return s.query||''; });
-      }
-    }
-    if (!results.length && braveKey) {
-      const braveRes = await searchBrave(keyword);
-      source = 'Brave';
-      braveRes.forEach(function(item) { results.push({ title:item.title, url:item.url, description:item.description, position:0 }); });
-    }
-    res.json({ keyword, results, paa, related, source, total:results.length });
-  } catch(e) { res.status(500).json({ error:e.message }); }
-});
 
 /* ================================================================
    ENDPOINT 2 — /generate
@@ -209,34 +172,18 @@ function buildAffiliateBox(items) {
 }
 
 function buildFaqHtml(faqItems) {
-  if (!faqItems || !faqItems.length) return '';
-  var showItems = faqItems.slice(0, 7);
-  var itemsHtml = showItems.map(function(item) {
-    var q = (item.q||'').replace(/\*\*/g,'').trim();
-    var a = (item.a||'').replace(/\*\*/g,'').trim();
+  if (!faqItems||!faqItems.length) return '';
+  const items = faqItems.map(function(item) {
     return '<div itemscope itemprop="mainEntity" itemtype="https://schema.org/Question" style="border-bottom:1px solid #2E2E2E;">'
-      + '<div style="padding:16px 20px;background:#111111;">'
-      + '<strong style="font-size:17px;font-weight:700;text-transform:uppercase;color:#E8FF00;display:block;margin-bottom:10px;" itemprop="name">' + escHtml(q) + '</strong>'
-      + '<div itemscope itemprop="acceptedAnswer" itemtype="https://schema.org/Answer">'
-      + '<div itemprop="text" style="font-size:15px;color:#C8C8C8;line-height:1.75;">' + escHtml(a) + '</div>'
-      + '</div></div></div>';
+      +'<div style="padding:16px 20px;background:#111111;">'
+      +'<strong style="font-family:\'Barlow Condensed\',sans-serif;font-size:17px;font-weight:700;text-transform:uppercase;color:#E8FF00;display:block;margin-bottom:10px;" itemprop="name">'+escHtml(item.q)+'</strong>'
+      +'<div itemscope itemprop="acceptedAnswer" itemtype="https://schema.org/Answer">'
+      +'<span itemprop="text" style="font-family:\'Lora\',serif;font-size:15px;color:#C8C8C8;line-height:1.75;">'+escHtml(item.a)+'</span>'
+      +'</div></div></div>';
   }).join('');
-  var schemaData = {
-    '@context': 'https://schema.org', '@type': 'FAQPage',
-    'mainEntity': showItems.map(function(item) {
-      return { '@type':'Question', 'name':(item.q||'').replace(/\*\*/g,'').trim(),
-        'acceptedAnswer':{'@type':'Answer','text':(item.a||'').replace(/\*\*/g,'').trim()} };
-    })
-  };
-  var speakableData = {
-    '@context':'https://schema.org','@type':'WebPage',
-    'speakable':{'@type':'SpeakableSpecification','cssSelector':['.bsm-faq-wrap']}
-  };
-  return '\n<script type="application/ld+json">' + JSON.stringify(schemaData) + '<\/script>'
-    + '<script type="application/ld+json">' + JSON.stringify(speakableData) + '<\/script>'
-    + '<div class="bsm-faq-wrap" itemscope itemtype="https://schema.org/FAQPage" style="max-width:720px;margin:40px 0;border:1px solid #2E2E2E;overflow:hidden;">'
-    + '<div style="font-size:22px;font-weight:800;text-transform:uppercase;color:#FFFFFF;padding:16px 20px;background:#1A1A1A;border-bottom:2px solid #E8FF00;">Frequently Asked Questions</div>'
-    + itemsHtml + '</div>\n';
+  return '\n<div itemscope itemtype="https://schema.org/FAQPage" style="max-width:720px;margin:40px 0;border:1px solid #2E2E2E;overflow:hidden;">'
+    +'<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:22px;font-weight:800;text-transform:uppercase;color:#FFFFFF;padding:16px 20px;background:#1A1A1A;border-bottom:2px solid #E8FF00;">Frequently Asked Questions</div>'
+    +items+'</div>\n';
 }
 
 function buildBSMHtml(parsed) {
@@ -332,36 +279,12 @@ app.post('/generate', async (req, res) => {
     const topicM = prompt.match(/about:\s*"([^"]+)"/i) || prompt.match(/"([^"]{10,80})"/);
     const topic  = topicM ? topicM[1] : prompt.slice(0,80);
 
-    // Search for current facts + PAA questions in parallel
-    const [search, paaData] = await Promise.all([
-      getSearchContext(topic),
-      (async function() {
-        const sk = process.env.SERP_API_KEY;
-        if (!sk) return [];
-        try {
-          const r = await fetch('https://serpapi.com/search.json?engine=google&q='
-            + encodeURIComponent(topic)
-            + '&num=5&gl=us&hl=en&no_cache=true&api_key=' + sk);
-          if (!r.ok) return [];
-          const d = await r.json();
-          return (d.related_questions||[]).slice(0,7).map(function(q){ return { q:q.question||'', a:q.answer||q.snippet||'' }; });
-        } catch(e) { return []; }
-      })()
-    ]);
-    console.log('PAA questions: ' + paaData.length);
+    // Search for current facts
+    const search = await getSearchContext(topic);
 
     // Build enriched system prompt
     let sys = system || 'You are an expert sports journalist and SEO specialist.';
-
-    // Add PAA context so Claude uses real FAQ questions
-    let paaCtx = '';
-    if (paaData && paaData.length > 0) {
-      paaCtx = '\n\n=== PEOPLE ALSO ASK — use these as FAQ questions (4-7 required) ===\n'
-        + paaData.map(function(p,i){ return (i+1)+'. Q: '+p.q+(p.a?'\n   A hint: '+p.a.slice(0,200):''); }).join('\n')
-        + '\n=== END PAA ===';
-    }
     if (search.resultsCount > 0) {
-      sys += paaCtx;
       sys += '\n\n=== CURRENT NEWS CONTEXT (from '+search.source+') ===\n\n'
         + search.context
         + '\n\n=== END CONTEXT ===\n\n'
@@ -371,7 +294,6 @@ app.post('/generate', async (req, res) => {
         + '3. Write around any missing detail rather than fabricating it\n'
         + '4. Current date: ' + new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});
     } else {
-      sys += paaCtx;
       sys += '\n\nCurrent date: ' + new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'})
         + '\nNote: live search unavailable — use training knowledge carefully and avoid fabricating specifics.';
     }
@@ -400,4 +322,4 @@ app.post('/generate', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log('TrendBlog AI Proxy v4.2 running on port ' + PORT));
+app.listen(PORT, () => console.log('TrendBlog AI Proxy v4.1 running on port ' + PORT));
