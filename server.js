@@ -19,120 +19,60 @@ app.get('/', (req, res) => {
    ================================================================ */
 
 app.get('/trends', async (req, res) => {
-  const serpKey  = process.env.SERP_API_KEY;
-  const braveKey = process.env.BRAVE_API_KEY;
+  const serpKey = process.env.SERP_API_KEY;
 
-  if (!serpKey && !braveKey) {
+  if (!serpKey) {
     return res.json({ source:'fallback', trends: getFallbackTrends() });
   }
 
-  const ts = Date.now();
-  let trends = [];
-  let source = 'fallback';
-  let lastError = '';
+  try {
+    // Google Trends — Realtime trending searches, Sports category, US
+    const ts  = Date.now();
+    const url = 'https://serpapi.com/search.json?engine=google_trends_trending_now'
+      + '&frequency=realtime'
+      + '&geo=US'
+      + '&category=15'
+      + '&no_cache=true'
+      + '&_=' + ts
+      + '&api_key=' + serpKey;
 
-  // ── Attempt 1: google_trends_trending_now (realtime sports) ──
-  if (serpKey && !trends.length) {
-    try {
-      const url = 'https://serpapi.com/search.json?engine=google_trends_trending_now'
-        + '&frequency=realtime&geo=US&category=15'
-        + '&no_cache=true&_=' + ts
-        + '&api_key=' + serpKey;
-      const r = await fetch(url);
-      if (r.ok) {
-        const d = await r.json();
-        const items = d.realtime_searches || d.trending_searches || [];
-        if (items.length) {
-          trends = items.slice(0,15).map(function(item, i) {
-            const title   = item.title || item.query || item.topic || 'Trending';
-            const traffic = item.formattedTraffic || item.traffic || item.search_volume || '50K+';
-            const pct     = item.increase || item.percentage_change || '+500%';
-            const vol     = parseInt((traffic+'').replace(/[^0-9]/g,'')) || 0;
-            let badge = 'rising';
-            if ((pct+'').includes('Breakout') || vol >= 200000) badge = 'breakout';
-            else if (vol >= 50000) badge = 'hot';
-            return { name:title, vol:typeof traffic==='string'?traffic:Math.round(vol/1000)+'K+', badge, pct:typeof pct==='string'?pct:'+'+pct+'%', started:(i<3?(i+1)*2:(i+1)*3)+'h ago' };
-          });
-          source = 'Google Trends Realtime';
-          console.log('Trends source 1 (realtime): ' + trends.length + ' topics');
-        }
-      } else { lastError = 'trending_now status ' + r.status; }
-    } catch(e) { lastError = 'trending_now: ' + e.message; console.log('Attempt 1 failed:', e.message); }
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('SerpAPI Trends failed: ' + r.status);
+    const data = await r.json();
+
+    const items = data.realtime_searches || data.trending_searches || [];
+
+    if (!items.length) throw new Error('No trends returned');
+
+    const trends = items.slice(0, 15).map(function(item, i) {
+      // SerpAPI returns different shapes — handle both
+      const title   = item.title || item.query || item.topic || 'Trending Topic';
+      const traffic = item.formattedTraffic || item.traffic || item.search_volume || '50K+';
+      const pct     = item.increase || item.percentage_change || '+500%';
+
+      // Score by traffic volume
+      let badge = 'rising';
+      const vol = parseInt((traffic+'').replace(/[^0-9]/g,'')) || 0;
+      if (pct && (pct+'').includes('Breakout')) badge = 'breakout';
+      else if (vol >= 200000) badge = 'breakout';
+      else if (vol >= 50000)  badge = 'hot';
+
+      return {
+        name:    title,
+        vol:     typeof traffic === 'string' ? traffic : (vol > 1000000 ? Math.round(vol/1000000)+'M+' : Math.round(vol/1000)+'K+'),
+        badge:   badge,
+        pct:     typeof pct === 'string' ? pct : '+' + pct + '%',
+        started: (i < 3 ? (i+1)*2 : (i+1)*3) + 'h ago'
+      };
+    });
+
+    console.log('Trends fetched from Google via SerpAPI: ' + trends.length + ' topics');
+    res.json({ source:'Google Trends via SerpAPI', trends });
+
+  } catch (e) {
+    console.log('Trends fetch failed: ' + e.message + ' — using fallback');
+    res.json({ source:'fallback', error: e.message, trends: getFallbackTrends() });
   }
-
-  // ── Attempt 2: google_trends with sports keywords ──
-  if (serpKey && !trends.length) {
-    try {
-      const sportKws = ['World Cup 2026','football boots 2026','Premier League','Champions League','NFL 2026'];
-      const url = 'https://serpapi.com/search.json?engine=google_trends'
-        + '&q=' + encodeURIComponent(sportKws.join(','))
-        + '&geo=US&data_type=TIMESERIES'
-        + '&no_cache=true&_=' + ts
-        + '&api_key=' + serpKey;
-      const r = await fetch(url);
-      if (r.ok) {
-        const d = await r.json();
-        const rising = (d.related_queries && d.related_queries.rising) || [];
-        if (rising.length) {
-          trends = rising.slice(0,15).map(function(item, i) {
-            return { name:item.query||'Trending', vol:'50K+', badge:i<3?'breakout':'hot', pct:item.value?'+'+item.value+'%':'+500%', started:(i+1)*2+'h ago' };
-          });
-          source = 'Google Trends Rising';
-          console.log('Trends source 2 (rising): ' + trends.length + ' topics');
-        }
-      } else { lastError = 'trends status ' + r.status; }
-    } catch(e) { lastError = 'trends: ' + e.message; console.log('Attempt 2 failed:', e.message); }
-  }
-
-  // ── Attempt 3: Google News sports via SerpAPI ──
-  if (serpKey && !trends.length) {
-    try {
-      const newsUrl = 'https://serpapi.com/search.json?engine=google_news'
-        + '&q=football+World+Cup+2026+sports'
-        + '&gl=us&hl=en&no_cache=true&_=' + ts
-        + '&api_key=' + serpKey;
-      const r = await fetch(newsUrl);
-      if (r.ok) {
-        const d = await r.json();
-        const news = d.news_results || [];
-        if (news.length) {
-          trends = news.slice(0,15).map(function(item, i) {
-            return { name:item.title||'Sports News', vol:'100K+', badge:i<3?'breakout':i<7?'hot':'rising', pct:'+500%', started:item.date||((i+1)*2+'h ago') };
-          });
-          source = 'Google News Sports';
-          console.log('Trends source 3 (news): ' + trends.length + ' topics');
-        }
-      }
-    } catch(e) { lastError = 'news: ' + e.message; console.log('Attempt 3 failed:', e.message); }
-  }
-
-  // ── Attempt 4: Brave Search for live sports news ──
-  if (braveKey && !trends.length) {
-    try {
-      const braveUrl = 'https://api.search.brave.com/res/v1/news/search?q=football+World+Cup+2026+trending&count=15&country=us&freshness=pd';
-      const r = await fetch(braveUrl, { headers:{ 'Accept':'application/json','X-Subscription-Token':braveKey } });
-      if (r.ok) {
-        const d = await r.json();
-        const results = d.results || [];
-        if (results.length) {
-          trends = results.slice(0,15).map(function(item, i) {
-            return { name:item.title||'Sports Trend', vol:'50K+', badge:i<3?'breakout':i<7?'hot':'rising', pct:'+300%', started:item.age||((i+1)*2+'h ago') };
-          });
-          source = 'Brave News';
-          console.log('Trends source 4 (brave): ' + trends.length + ' topics');
-        }
-      }
-    } catch(e) { lastError = 'brave: ' + e.message; console.log('Attempt 4 failed:', e.message); }
-  }
-
-  // ── Final fallback ──
-  if (!trends.length) {
-    console.log('All trend sources failed (' + lastError + ') — using static fallback');
-    trends = getFallbackTrends();
-    source = 'fallback';
-  }
-
-  res.json({ source, trends, lastError:lastError||'' });
 });
 
 function getFallbackTrends() {
@@ -460,4 +400,4 @@ app.post('/generate', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log('TrendBlog AI Proxy v4.3 running on port ' + PORT));
+app.listen(PORT, () => console.log('TrendBlog AI Proxy v4.2 running on port ' + PORT));
