@@ -759,21 +759,56 @@ function parseArticle(rawText) {
   const cM=rawText.match(/CONTENT:\s*([\s\S]+)/);
   const content=cM?cM[1].trim():rawText;
 
-  // FAQ
-  const faqBM=content.match(/##\s*Frequently Asked Questions\s*([\s\S]+?)(?=\n##\s|$)/i);
-  if (faqBM) {
-    const block=faqBM[1];
-    const chunks=block.split(/\*\*Q:\*\*/i).filter(s=>s.trim());
+  // FAQ — robust multi-format parser
+  // Handles: **Q:**/**A:**, Q:/A:, plain Q/A, with or without ## heading
+  function parseFaqs(text) {
+    var faqs = [];
+
+    // Strategy 1: **Q:** ... **A:** format (most common Claude output)
+    var chunks = text.split(/\*\*Q:\*\*/i).filter(function(s){ return s.trim(); });
     chunks.forEach(function(chunk) {
-      const aIdx=chunk.search(/\*\*A:\*\*/i);
-      if (aIdx===-1) return;
-      let q=chunk.slice(0,aIdx).replace(/\*\*/g,'').replace(/^[:\s]+/,'').trim();
-      let a=chunk.slice(aIdx).replace(/^\*\*A:\*\*/i,'').replace(/\*\*Q:[\s\S]*/i,'').replace(/\*\*/g,'').replace(/\*By BSM[^*]*\*/i,'').trim().replace(/\n/g,' ').replace(/\s+/g,' ');
-      if (q&&a&&q.length>3) result.faq.push({q,a});
+      var aIdx = chunk.search(/\*\*A:\*\*/i);
+      if (aIdx === -1) return;
+      var q = chunk.slice(0, aIdx).replace(/\*\*/g,'').replace(/^[?:\s]+/,'').trim();
+      var a = chunk.slice(aIdx).replace(/^\*\*A:\*\*/i,'').replace(/\*\*Q:[\s\S]*/i,'').replace(/\*\*/g,'').trim().replace(/\n/g,' ').replace(/\s+/g,' ');
+      if (q && a && q.length > 3 && a.length > 10) faqs.push({q:q, a:a});
     });
-    if (!result.faq.length) {
-      [...block.matchAll(/Q:\s*(.+?)\n+A:\s*([\s\S]+?)(?=Q:|\n##|$)/gi)].forEach(m=>result.faq.push({q:m[1].trim(),a:m[2].trim().replace(/\n/g,' ')}));
-    }
+    if (faqs.length >= 2) return faqs;
+
+    // Strategy 2: Q: ... A: format (no bold markers)
+    var matches2 = [...text.matchAll(/(?:^|\n)\s*Q[:\.]\s*(.+?)\n+\s*A[:\.]\s*([\s\S]+?)(?=\n\s*Q[:\.\s]|\n##|$)/gi)];
+    matches2.forEach(function(m) {
+      var q = m[1].replace(/\*\*/g,'').trim();
+      var a = m[2].replace(/\*\*/g,'').trim().replace(/\n/g,' ').replace(/\s+/g,' ');
+      if (q && a && q.length > 3 && a.length > 10) faqs.push({q:q, a:a});
+    });
+    if (faqs.length >= 2) return faqs;
+
+    // Strategy 3: numbered Q&A blocks
+    var matches3 = [...text.matchAll(/\d+\.\s+\*{0,2}(.+?)\*{0,2}\n+([\s\S]+?)(?=\n\d+\.|\n##|$)/gi)];
+    matches3.forEach(function(m) {
+      var q = m[1].replace(/\*\*/g,'').replace(/^Q[:\s]+/i,'').trim();
+      var a = m[2].replace(/\*\*/g,'').trim().replace(/\n/g,' ').replace(/\s+/g,' ');
+      if (q && q.endsWith('?') && a && a.length > 15) faqs.push({q:q, a:a});
+    });
+    return faqs;
+  }
+
+  // Find FAQ section — try with heading first, then scan entire content
+  var faqBlock = '';
+  var faqHeadingMatch = content.match(/##\s*(?:Frequently Asked Questions|FAQ)[\s\S]+?(?=\n##\s|$)/i);
+  if (faqHeadingMatch) {
+    faqBlock = faqHeadingMatch[0];
+  } else {
+    // No heading — scan entire content for Q/A patterns
+    faqBlock = content;
+  }
+
+  result.faq = parseFaqs(faqBlock);
+
+  // Ensure minimum of 1 FAQ before giving up
+  if (!result.faq.length && faqHeadingMatch) {
+    result.faq = parseFaqs(content);
   }
 
   const noFaq=content.replace(/##\s*Frequently Asked Questions[\s\S]+?(?=\n##\s|$)/i,'');
@@ -800,7 +835,7 @@ function parseArticle(rawText) {
   noFaq.split(/^## /m).forEach(function(part,i) {
     if (!part.trim()) return;
     let heading='',text=part;
-    if (i>0) { const nl=part.indexOf('\n'); if(nl>-1){heading=part.slice(0,nl).trim();text=part.slice(nl+1);}else{heading=part.trim();text='';} }
+    if (i>0) { const nl=part.indexOf('\n'); if(nl>-1){heading=part.slice(0,nl).trim().replace(/\*\*/g,'').replace(/^#+\s*/,'');text=part.slice(nl+1);}else{heading=part.trim().replace(/\*\*/g,'').replace(/^#+\s*/,'');text='';} }
     text=text
       .replace(/\[AFFILIATE:[^\]]+\]/gi,'').replace(/\[AMAZON:[^\]]+\]/gi,'')
       .replace(/\[INTERNAL:\s*([^\]]+)\]/gi,'<a href="#" style="color:#E8FF00;text-decoration:underline;">$1</a>')
@@ -851,9 +886,16 @@ app.post('/generate', async (req, res) => {
     // Add PAA context so Claude uses real FAQ questions
     let paaCtx = '';
     if (paaData && paaData.length > 0) {
-      paaCtx = '\n\n=== PEOPLE ALSO ASK — use these as FAQ questions (4-7 required) ===\n'
+      paaCtx = '\n\n=== PEOPLE ALSO ASK — use EXACTLY these as your FAQ questions ===\n'
         + paaData.map(function(p,i){ return (i+1)+'. Q: '+p.q+(p.a?'\n   A hint: '+p.a.slice(0,200):''); }).join('\n')
-        + '\n=== END PAA ===';
+        + '\n=== END PAA ==='
+        + '\n\nFAQ FORMAT RULES (non-negotiable):'
+        + '\n- Write 4-7 FAQ items using the PAA questions above'
+        + '\n- Use this exact format for every FAQ:'
+        + '\n  **Q:** [question text]?'
+        + '\n  **A:** [answer — 2-4 sentences, specific and factual]'
+        + '\n- Do NOT use numbered lists or any other format'
+        + '\n- FAQ section must start with: ## Frequently Asked Questions';
     }
     if (search.resultsCount > 0) {
       sys += paaCtx;
@@ -896,4 +938,4 @@ app.post('/generate', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log('TrendBlog AI Proxy v5.0 running on port ' + PORT));
+app.listen(PORT, () => console.log('TrendBlog AI Proxy v5.1 running on port ' + PORT));
