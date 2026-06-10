@@ -9,7 +9,7 @@ app.use(cors({ origin:'*', methods:['POST','GET','OPTIONS'], allowedHeaders:['Co
 app.use(express.json({ limit:'10mb' }));
 
 app.get('/', (req, res) => {
-  res.json({ status:'TrendBlog AI Proxy is running', version:'5.1.0' });
+  res.json({ status:'TrendBlog AI Proxy is running', version:'5.3.0' });
 });
 
 /* ================================================================
@@ -26,14 +26,83 @@ app.get('/trends', async (req, res) => {
     return res.json({ source:'fallback', trends: getFallbackTrends() });
   }
 
-  const ts = Date.now();
+  const ts  = Date.now();
   const geo = req.query.geo || 'US';
   const geoParam = (geo === 'GLOBAL') ? '' : ('&geo=' + geo);
+  const glParam  = (geo === 'GLOBAL') ? 'us' : geo.toLowerCase();
   let trends = [];
   let source = 'fallback';
   let lastError = '';
 
-  // ── Attempt 1: google_trends_trending_now (realtime sports) ──
+  // ── Attempt 1: Brave News — PRIMARY (no rate limit issues) ──
+  if (braveKey && !trends.length) {
+    try {
+      const queries = [
+        'World Cup 2026 football',
+        'Premier League football news',
+        'Champions League 2026',
+        'football boots 2026',
+        'sports trending today'
+      ];
+      const q = queries[0];
+      const braveUrl = 'https://api.search.brave.com/res/v1/news/search'
+        + '?q=' + encodeURIComponent(q)
+        + '&count=20&country=' + (geo === 'GLOBAL' ? 'us' : geo.toLowerCase())
+        + '&search_lang=en&freshness=pd&_=' + ts;
+      const r = await fetch(braveUrl, {
+        headers: { 'Accept': 'application/json', 'X-Subscription-Token': braveKey }
+      });
+      if (r.ok) {
+        const d = await r.json();
+        const results = d.results || [];
+        if (results.length) {
+          trends = results.slice(0, 15).map(function(item, i) {
+            var age = item.age || ((i + 1) * 2 + 'h ago');
+            var badge = i < 3 ? 'breakout' : i < 8 ? 'hot' : 'rising';
+            return {
+              name:    item.title || 'Sports News',
+              vol:     i < 3 ? '100K+' : i < 8 ? '50K+' : '25K+',
+              badge:   badge,
+              pct:     i < 3 ? '+500%' : i < 8 ? '+300%' : '+150%',
+              started: age
+            };
+          });
+          source = 'Brave News (Live)';
+          console.log('Trends source 1 (Brave News): ' + trends.length + ' topics');
+        }
+      } else { lastError = 'brave_news status ' + r.status; }
+    } catch(e) { lastError = 'brave_news: ' + e.message; console.log('Brave News failed:', e.message); }
+  }
+
+  // ── Attempt 2: SerpAPI Google News (if Brave fails) ──
+  if (serpKey && !trends.length) {
+    try {
+      const newsUrl = 'https://serpapi.com/search.json?engine=google_news'
+        + '&q=football+World+Cup+2026+sports'
+        + '&gl=' + glParam + '&hl=en&no_cache=true&_=' + ts
+        + '&api_key=' + serpKey;
+      const r = await fetch(newsUrl);
+      if (r.ok) {
+        const d = await r.json();
+        const news = d.news_results || [];
+        if (news.length) {
+          trends = news.slice(0, 15).map(function(item, i) {
+            return {
+              name:    item.title || 'Sports News',
+              vol:     i < 3 ? '100K+' : '50K+',
+              badge:   i < 3 ? 'breakout' : i < 7 ? 'hot' : 'rising',
+              pct:     '+500%',
+              started: item.date || ((i + 1) * 2 + 'h ago')
+            };
+          });
+          source = 'Google News Sports';
+          console.log('Trends source 2 (Google News): ' + trends.length + ' topics');
+        }
+      } else { lastError = 'google_news status ' + r.status; }
+    } catch(e) { lastError = 'google_news: ' + e.message; console.log('Google News failed:', e.message); }
+  }
+
+  // ── Attempt 3: SerpAPI Google Trends Trending Now ──
   if (serpKey && !trends.length) {
     try {
       const url = 'https://serpapi.com/search.json?engine=google_trends_trending_now'
@@ -45,27 +114,33 @@ app.get('/trends', async (req, res) => {
         const d = await r.json();
         const items = d.realtime_searches || d.trending_searches || [];
         if (items.length) {
-          trends = items.slice(0,15).map(function(item, i) {
+          trends = items.slice(0, 15).map(function(item, i) {
             const title   = item.title || item.query || item.topic || 'Trending';
             const traffic = item.formattedTraffic || item.traffic || item.search_volume || '50K+';
             const pct     = item.increase || item.percentage_change || '+500%';
-            const vol     = parseInt((traffic+'').replace(/[^0-9]/g,'')) || 0;
+            const vol     = parseInt((traffic + '').replace(/[^0-9]/g, '')) || 0;
             let badge = 'rising';
-            if ((pct+'').includes('Breakout') || vol >= 200000) badge = 'breakout';
+            if ((pct + '').includes('Breakout') || vol >= 200000) badge = 'breakout';
             else if (vol >= 50000) badge = 'hot';
-            return { name:title, vol:typeof traffic==='string'?traffic:Math.round(vol/1000)+'K+', badge, pct:typeof pct==='string'?pct:'+'+pct+'%', started:(i<3?(i+1)*2:(i+1)*3)+'h ago' };
+            return {
+              name:    title,
+              vol:     typeof traffic === 'string' ? traffic : Math.round(vol / 1000) + 'K+',
+              badge:   badge,
+              pct:     typeof pct === 'string' ? pct : '+' + pct + '%',
+              started: (i < 3 ? (i + 1) * 2 : (i + 1) * 3) + 'h ago'
+            };
           });
           source = 'Google Trends Realtime';
-          console.log('Trends source 1 (realtime): ' + trends.length + ' topics');
+          console.log('Trends source 3 (Trends Now): ' + trends.length + ' topics');
         }
       } else { lastError = 'trending_now status ' + r.status; }
-    } catch(e) { lastError = 'trending_now: ' + e.message; console.log('Attempt 1 failed:', e.message); }
+    } catch(e) { lastError = 'trending_now: ' + e.message; }
   }
 
-  // ── Attempt 2: google_trends with sports keywords ──
+  // ── Attempt 4: SerpAPI Google Trends Rising Queries ──
   if (serpKey && !trends.length) {
     try {
-      const sportKws = ['World Cup 2026','football boots 2026','Premier League','Champions League','NFL 2026'];
+      const sportKws = ['World Cup 2026', 'football boots 2026', 'Premier League', 'Champions League', 'NFL 2026'];
       const url = 'https://serpapi.com/search.json?engine=google_trends'
         + '&q=' + encodeURIComponent(sportKws.join(','))
         + '&geo=' + geo + '&data_type=TIMESERIES'
@@ -76,87 +151,88 @@ app.get('/trends', async (req, res) => {
         const d = await r.json();
         const rising = (d.related_queries && d.related_queries.rising) || [];
         if (rising.length) {
-          trends = rising.slice(0,15).map(function(item, i) {
-            return { name:item.query||'Trending', vol:'50K+', badge:i<3?'breakout':'hot', pct:item.value?'+'+item.value+'%':'+500%', started:(i+1)*2+'h ago' };
+          trends = rising.slice(0, 15).map(function(item, i) {
+            return { name: item.query || 'Trending', vol: '50K+', badge: i < 3 ? 'breakout' : 'hot', pct: item.value ? '+' + item.value + '%' : '+500%', started: (i + 1) * 2 + 'h ago' };
           });
           source = 'Google Trends Rising';
-          console.log('Trends source 2 (rising): ' + trends.length + ' topics');
+          console.log('Trends source 4 (rising): ' + trends.length + ' topics');
         }
-      } else { lastError = 'trends status ' + r.status; }
-    } catch(e) { lastError = 'trends: ' + e.message; console.log('Attempt 2 failed:', e.message); }
+      } else { lastError = 'trends_rising status ' + r.status; }
+    } catch(e) { lastError = 'trends_rising: ' + e.message; }
   }
 
-  // ── Attempt 3: Google News sports via SerpAPI ──
-  if (serpKey && !trends.length) {
-    try {
-      const newsUrl = 'https://serpapi.com/search.json?engine=google_news'
-        + '&q=football+World+Cup+2026+sports'
-        + '&gl=' + (geo==='GLOBAL'?'us':geo.toLowerCase()) + '&hl=en&no_cache=true&_=' + ts
-        + '&api_key=' + serpKey;
-      const r = await fetch(newsUrl);
-      if (r.ok) {
-        const d = await r.json();
-        const news = d.news_results || [];
-        if (news.length) {
-          trends = news.slice(0,15).map(function(item, i) {
-            return { name:item.title||'Sports News', vol:'100K+', badge:i<3?'breakout':i<7?'hot':'rising', pct:'+500%', started:item.date||((i+1)*2+'h ago') };
-          });
-          source = 'Google News Sports';
-          console.log('Trends source 3 (news): ' + trends.length + ' topics');
-        }
-      }
-    } catch(e) { lastError = 'news: ' + e.message; console.log('Attempt 3 failed:', e.message); }
-  }
-
-  // ── Attempt 4: Brave Search for live sports news ──
-  if (braveKey && !trends.length) {
-    try {
-      const braveUrl = 'https://api.search.brave.com/res/v1/news/search?q=football+World+Cup+2026+trending&count=15&country=us&freshness=pd';
-      const r = await fetch(braveUrl, { headers:{ 'Accept':'application/json','X-Subscription-Token':braveKey } });
-      if (r.ok) {
-        const d = await r.json();
-        const results = d.results || [];
-        if (results.length) {
-          trends = results.slice(0,15).map(function(item, i) {
-            return { name:item.title||'Sports Trend', vol:'50K+', badge:i<3?'breakout':i<7?'hot':'rising', pct:'+300%', started:item.age||((i+1)*2+'h ago') };
-          });
-          source = 'Brave News';
-          console.log('Trends source 4 (brave): ' + trends.length + ' topics');
-        }
-      }
-    } catch(e) { lastError = 'brave: ' + e.message; console.log('Attempt 4 failed:', e.message); }
-  }
-
-  // ── Final fallback ──
+  // ── Static fallback — update these weekly ──
   if (!trends.length) {
     console.log('All trend sources failed (' + lastError + ') — using static fallback');
     trends = getFallbackTrends();
     source = 'fallback';
   }
 
-  res.json({ source, trends, lastError:lastError||'' });
+  res.json({ source, trends, lastError: lastError || '', ts: new Date().toISOString() });
 });
 
-function getFallbackTrends() {
-  return [
-    { name:'FIFA World Cup 2026 host cities guide',    vol:'500K+', badge:'breakout', pct:'+1,000%', started:'2h ago' },
-    { name:'World Cup 2026 group stage draw results',  vol:'200K+', badge:'breakout', pct:'+1,000%', started:'4h ago' },
-    { name:'Messi World Cup 2026 Argentina squad',     vol:'200K+', badge:'breakout', pct:'+1,000%', started:'3h ago' },
-    { name:'World Cup 2026 schedule fixtures dates',   vol:'200K+', badge:'hot',      pct:'+800%',   started:'6h ago' },
-    { name:'USA World Cup 2026 squad roster',          vol:'100K+', badge:'hot',      pct:'+650%',   started:'5h ago' },
-    { name:'World Cup 2026 tickets how to buy',        vol:'100K+', badge:'hot',      pct:'+500%',   started:'11h ago' },
-    { name:'England World Cup 2026 squad news',        vol:'100K+', badge:'hot',      pct:'+450%',   started:'8h ago' },
-    { name:'Brazil World Cup 2026 lineup prediction',  vol:'100K+', badge:'hot',      pct:'+600%',   started:'7h ago' },
-    { name:'France World Cup 2026 team preview',       vol:'100K+', badge:'rising',   pct:'+400%',   started:'9h ago' },
-    { name:'World Cup 2026 bracket predictions',       vol:'50K+',  badge:'rising',   pct:'+400%',   started:'13h ago' },
-    { name:'World Cup 2026 best football boots',       vol:'50K+',  badge:'rising',   pct:'+300%',   started:'16h ago' },
-    { name:'Topps Chrome World Cup 2026 cards',        vol:'50K+',  badge:'rising',   pct:'+500%',   started:'14h ago' }
-  ];
-}
-
 /* ================================================================
-   ENDPOINT 1b — /serp — SERP analysis with PAA for any keyword
+   ENDPOINT /fetch-refs
+   Fetches and extracts text from up to 5 reference URLs
+   Used by TrendBlog Generate tab to ground Claude in real sources
    ================================================================ */
+app.post('/fetch-refs', async (req, res) => {
+  const { urls } = req.body;
+  if (!urls || !urls.length) return res.status(400).json({ error:'No URLs provided' });
+
+  const validUrls = urls.filter(function(u) {
+    return u && u.trim() && (u.startsWith('http://') || u.startsWith('https://'));
+  }).slice(0, 5);
+
+  if (!validUrls.length) return res.status(400).json({ error:'No valid URLs' });
+
+  const results = await Promise.all(validUrls.map(async function(url) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(function() { controller.abort(); }, 8000);
+      const r = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; BSMBot/1.0)',
+          'Accept': 'text/html,application/xhtml+xml',
+          'Accept-Language': 'en-US,en;q=0.9'
+        },
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+      if (!r.ok) return { url, error:'HTTP '+r.status, text:'' };
+      const html = await r.text();
+
+      var clean = html
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[\s\S]*?<\/style>/gi, '')
+        .replace(/<nav[\s\S]*?<\/nav>/gi, '')
+        .replace(/<footer[\s\S]*?<\/footer>/gi, '')
+        .replace(/<header[\s\S]*?<\/header>/gi, '')
+        .replace(/<aside[\s\S]*?<\/aside>/gi, '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/\s{3,}/g, '\n\n')
+        .trim();
+
+      var titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+      var title = titleMatch ? titleMatch[1].trim() : url;
+      var text = title + '\n\n' + clean.slice(0, 3000);
+
+      console.log('Fetched ref: ' + url + ' (' + text.length + ' chars)');
+      return { url, title, text, error:null };
+
+    } catch(e) {
+      console.log('Ref fetch failed: ' + url + ' — ' + e.message);
+      return { url, error:e.message, text:'' };
+    }
+  }));
+
+  var successful = results.filter(function(r) { return r.text && r.text.length > 100; });
+  res.json({ results, successful:successful.length, total:validUrls.length });
+});
+
+
 app.post('/serp', async (req, res) => {
   const { keyword } = req.body;
   if (!keyword) return res.status(400).json({ error:'Missing keyword' });
@@ -853,7 +929,7 @@ function parseArticle(rawText) {
 /* ── Main generate endpoint ── */
 app.post('/generate', async (req, res) => {
   try {
-    const { prompt, system, model, max_tokens } = req.body;
+    const { prompt, system, model, max_tokens, serpData, refContent } = req.body;
     if (!prompt) return res.status(400).json({ error:'Missing prompt' });
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) return res.status(500).json({ error:'API key not set' });
@@ -862,26 +938,119 @@ app.post('/generate', async (req, res) => {
     const topicM = prompt.match(/about:\s*"([^"]+)"/i) || prompt.match(/"([^"]{10,80})"/);
     const topic  = topicM ? topicM[1] : prompt.slice(0,80);
 
-    // Search for current facts + PAA questions in parallel
-    const [search, paaData] = await Promise.all([
-      getSearchContext(topic),
-      (async function() {
-        const sk = process.env.SERP_API_KEY;
-        if (!sk) return [];
-        try {
-          const r = await fetch('https://serpapi.com/search.json?engine=google&q='
-            + encodeURIComponent(topic)
-            + '&num=5&gl=us&hl=en&no_cache=true&api_key=' + sk);
-          if (!r.ok) return [];
-          const d = await r.json();
-          return (d.related_questions||[]).slice(0,7).map(function(q){ return { q:q.question||'', a:q.answer||q.snippet||'' }; });
-        } catch(e) { return []; }
-      })()
-    ]);
-    console.log('PAA questions: ' + paaData.length);
+    // If serpData passed from tool (already fetched in Research tab) — skip duplicate call
+    // This saves 1 SerpAPI call per article and uses richer cached data
+    let search, paaData;
+
+    if (serpData && serpData.results && serpData.results.length) {
+      console.log('Using cached SERP data from tool — skipping duplicate API call');
+      // Build search context from cached SERP
+      var serpContext2 = serpData.results.slice(0, 8).map(function(r, i) {
+        return 'Source ' + (i+1) + ': ' + r.title + '\nURL: ' + r.url + '\nSummary: ' + r.description;
+      }).join('\n\n');
+      search = { context: serpContext2, source: 'cached SERP from Research tab', resultsCount: serpData.results.length };
+      paaData = (serpData.paa || []).slice(0, 7).map(function(p) {
+        return { q: p.q || p.question || '', a: p.a || p.answer || '' };
+      });
+      console.log('Cached SERP: ' + search.resultsCount + ' results, ' + paaData.length + ' PAA questions');
+    } else {
+      // No cached data — fetch fresh
+      console.log('No cached SERP — fetching fresh');
+      const results2 = await Promise.all([
+        getSearchContext(topic),
+        (async function() {
+          const sk = process.env.SERP_API_KEY;
+          if (!sk) return [];
+          try {
+            const r = await fetch('https://serpapi.com/search.json?engine=google&q='
+              + encodeURIComponent(topic)
+              + '&num=5&gl=us&hl=en&no_cache=true&api_key=' + sk);
+            if (!r.ok) return [];
+            const d = await r.json();
+            return (d.related_questions||[]).slice(0,7).map(function(q){ return { q:q.question||'', a:q.answer||q.snippet||'' }; });
+          } catch(e) { return []; }
+        })()
+      ]);
+      search  = results2[0];
+      paaData = results2[1];
+      console.log('Fresh SERP: ' + search.resultsCount + ' results, ' + paaData.length + ' PAA questions');
+    }
 
     // Build enriched system prompt
-    let sys = system || 'You are an expert sports journalist and SEO specialist.';
+    // ── Build reference sources context ──
+    var refCtx = '';
+    if (refContent && refContent.length > 0) {
+      var validRefs = refContent.filter(function(r) { return r.text && r.text.length > 50; });
+      if (validRefs.length > 0) {
+        refCtx = '\n\n=== REFERENCE SOURCES PROVIDED BY EDITOR ==='
+          + '\nThese are PRIMARY sources. When writing, prioritise facts from these over your training data.'
+          + '\nCite specific details — names, numbers, dates, quotes — from these sources.\n\n'
+          + validRefs.map(function(r, i) {
+              return '--- Reference ' + (i+1) + ' ---\n'
+                + 'URL: ' + r.url + '\n'
+                + (r.title ? 'Title: ' + r.title + '\n' : '')
+                + 'Content:\n' + r.text.slice(0, 2500);
+            }).join('\n\n')
+          + '\n=== END REFERENCE SOURCES ===';
+        console.log('Reference sources injected: ' + validRefs.length);
+      }
+    }
+
+    let sys = system || [
+      'You are a senior sports journalist writing for BestSportsMag.com — a fast, authoritative,',
+      'data-driven sports publication. You write like a cross between The Athletic and Sky Sports:',
+      'editorial, specific, fact-dense, and fan-focused.',
+      '',
+      '=== VOICE AND STYLE ===',
+      '- Short punchy sentences. Maximum 25 words per sentence in the opening paragraph.',
+      '- No filler. Every sentence must add information or analysis.',
+      '- Use specific names, scores, dates, statistics — never generalise.',
+      '- Write in active voice. "Messi scored" not "a goal was scored by Messi".',
+      '- Open with the most important fact, not background context.',
+      '- Treat the reader as an intelligent sports fan who already knows the basics.',
+      '',
+      '=== FORBIDDEN PHRASES — NEVER USE THESE ===',
+      '- "In the world of sports..."',
+      '- "It goes without saying..."',
+      '- "At the end of the day..."',
+      '- "This is a testament to..."',
+      '- "In conclusion..."',
+      '- "It is worth noting that..."',
+      '- "Sports have always been..."',
+      '- "Throughout history..."',
+      '- Any sentence that could apply to ANY sport or ANY athlete generically.',
+      '- Any sentence that contains no specific fact, name, score, or date.',
+      '',
+      '=== FACTS AND ACCURACY ===',
+      '- If reference URLs are provided: treat them as PRIMARY source.',
+      '  Extract specific facts, quotes, stats, and dates from them.',
+      '  Every factual claim must be traceable to a reference or the SERP context.',
+      '- If SERP context is provided: use it as MANDATORY supporting material.',
+      '  Do not ignore it. Do not replace it with training data.',
+      '- If neither is available: state uncertainty explicitly rather than fabricating.',
+      '- Never invent: squad numbers, transfer fees, scores, injury details, quotes.',
+      '',
+      '=== STRUCTURE ===',
+      '- Opening paragraph: the single most important fact about this topic right now.',
+      '- Second paragraph: context that makes the first paragraph more significant.',
+      '- H2 sections: each must have a specific keyword-rich heading — not vague titles.',
+      '  Good: "Why Messi Absence Changes Argentina World Cup Tactics"',
+      '  Bad: "Key Players to Watch"',
+      '- Each H2 section: minimum 3 paragraphs, each adding distinct information.',
+      '- No padding. If a section runs out of substance, end it — do not repeat.',
+      '',
+      '=== BSM EDITORIAL RULES ===',
+      '- World Cup 2026 coverage: always mention specific host cities (USA, Canada, Mexico).',
+      '- Transfer news: always include fee if known, clubs involved, contract length if known.',
+      '- Match previews: always include recent form (last 5 matches) if available in context.',
+      '- Gear reviews: always include specific price, exact model name, one real competitor.',
+      '- Rankings/lists: each item must have a specific reason — not "because they are talented".',
+      '',
+      '=== FAQ RULES ===',
+      '- Use the People Also Ask questions provided — do not invent questions.',
+      '- Each answer: 3-4 sentences, specific, includes at least one fact from the article.',
+      '- Never answer a FAQ with a vague generalisation.'
+    ].join('\n');
 
     // Add PAA context so Claude uses real FAQ questions
     let paaCtx = '';
@@ -898,6 +1067,7 @@ app.post('/generate', async (req, res) => {
         + '\n- FAQ section must start with: ## Frequently Asked Questions';
     }
     if (search.resultsCount > 0) {
+      sys += refCtx;
       sys += paaCtx;
       sys += '\n\n=== CURRENT NEWS CONTEXT (from '+search.source+') ===\n\n'
         + search.context
@@ -908,6 +1078,7 @@ app.post('/generate', async (req, res) => {
         + '3. Write around any missing detail rather than fabricating it\n'
         + '4. Current date: ' + new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});
     } else {
+      sys += refCtx;
       sys += paaCtx;
       sys += '\n\nCurrent date: ' + new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'})
         + '\nNote: live search unavailable — use training knowledge carefully and avoid fabricating specifics.';
@@ -938,4 +1109,4 @@ app.post('/generate', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log('TrendBlog AI Proxy v5.1 running on port ' + PORT));
+app.listen(PORT, () => console.log('TrendBlog AI Proxy v5.3 running on port ' + PORT));
