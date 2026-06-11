@@ -9,7 +9,7 @@ app.use(cors({ origin:'*', methods:['POST','GET','OPTIONS'], allowedHeaders:['Co
 app.use(express.json({ limit:'10mb' }));
 
 app.get('/', (req, res) => {
-  res.json({ status:'TrendBlog AI Proxy is running', version:'5.4.0' });
+  res.json({ status:'TrendBlog AI Proxy is running', version:'6.0.0' });
 });
 
 /* ================================================================
@@ -233,6 +233,99 @@ app.post('/fetch-refs', async (req, res) => {
 });
 
 
+/* ================================================================
+   ENDPOINT /score — SEO + GEO + AI/LLM optimization scoring
+   Returns 3 scores (0-100) + failed checks with fix suggestions
+   ================================================================ */
+app.post('/score', (req, res) => {
+  try {
+    var a = req.body || {};
+    var title   = (a.title || '').trim();
+    var meta    = (a.meta || '').trim();
+    var slug    = (a.slug || '').trim();
+    var content = (a.content || '');
+    var html    = (a.html || '');
+    var faq     = a.faq || [];
+    var keyword = (a.keyword || a.topic || '').toLowerCase();
+    var wordCount = content ? content.split(/\s+/).filter(Boolean).length : 0;
+
+    var lc = content.toLowerCase();
+    var h2Count = (content.match(/^##\s/gm) || []).length;
+
+    // ─────────── SEO CHECKS ───────────
+    var seo = [];
+    seo.push(check('Keyword in title', keyword && title.toLowerCase().indexOf(keyword.split(' ')[0]) > -1,
+      'Add the primary keyword near the start of the SEO title.'));
+    seo.push(check('Title length 30-60 chars', title.length >= 30 && title.length <= 60,
+      'Adjust title to 30-60 characters for full SERP display.'));
+    seo.push(check('Meta description 120-160 chars', meta.length >= 120 && meta.length <= 160,
+      'Rewrite meta description to 150-155 characters with keyword + benefit.'));
+    seo.push(check('Clean slug', /^[a-z0-9-]+$/.test(slug) && slug.length > 3,
+      'Slug must be lowercase-hyphenated, no special characters.'));
+    seo.push(check('At least 3 H2 sections', h2Count >= 3,
+      'Add more H2 sections — aim for 4-6 keyword-rich headings.'));
+    seo.push(check('Word count 1200+', wordCount >= 1200,
+      'Expand article to at least 1,200 words for ranking depth.'));
+    seo.push(check('Has data table', html.indexOf('<table') > -1 || content.indexOf('|') > -1,
+      'Add a comparison or data table for featured snippet eligibility.'));
+    seo.push(check('Internal links present', (a.internalLinks || []).length > 0 || content.indexOf('[INTERNAL') > -1,
+      'Add 2-4 internal links to related BSM articles.'));
+    seo.push(check('Schema markup present', html.indexOf('application/ld+json') > -1,
+      'Ensure the article ships with JSON-LD schema (auto-added on publish).'));
+
+    // ─────────── GEO CHECKS (Google AI Overviews) ───────────
+    var geo = [];
+    geo.push(check('Quick answer box', !!a.quickAnswer || html.indexOf('bsm-quick-answer') > -1 || html.indexOf('bsm-verdict') > -1,
+      'Add a Quick Answer box that states the core answer in 1-2 sentences.'));
+    geo.push(check('Direct-answer opening', content.slice(0, 300).split('.').length >= 2,
+      'Open with a direct, factual sentence that answers the query immediately.'));
+    geo.push(check('Specific numbers/stats', (content.match(/\d/g) || []).length >= 15,
+      'Add more specific numbers, dates, and statistics — AI engines cite concrete data.'));
+    geo.push(check('Named entities', (content.match(/[A-Z][a-z]+\s[A-Z][a-z]+/g) || []).length >= 8,
+      'Reference more named people, teams, and places for entity clarity.'));
+    geo.push(check('FAQ present (4+)', faq.length >= 4,
+      'Add at least 4 FAQ items — AI Overviews lift Q&A pairs.'));
+    geo.push(check('Definitional clarity', /\bis\b|\bare\b|\bmeans\b|\brefers\b/.test(lc.slice(0, 600)),
+      'Include clear definitional statements near the top (X is Y).'));
+
+    // ─────────── AI/LLM CHECKS (ChatGPT/Perplexity citation) ───────────
+    var ai = [];
+    ai.push(check('Extractable claims', (content.match(/\d+\s*(goals|wins|points|percent|%|million|billion|years|matches|teams)/gi) || []).length >= 3,
+      'Add more self-contained factual claims AI can quote directly.'));
+    ai.push(check('Source attribution', /according to|reported|confirmed|announced|per /i.test(content),
+      'Attribute key facts to sources (according to, reported by) for citation trust.'));
+    ai.push(check('FAQ schema-ready', faq.length >= 4,
+      'Ensure 4-7 FAQ items in Q/A format for structured extraction.'));
+    ai.push(check('Key takeaways block', (a.takeaways || []).length > 0 || html.indexOf('bsm-takeaways') > -1,
+      'Add a Key Takeaways list — AI engines extract bulleted summaries.'));
+    ai.push(check('Scannable structure', h2Count >= 3 && (faq.length >= 4),
+      'Improve structure: clear H2s plus FAQ make content machine-readable.'));
+    ai.push(check('Entity-rich content', (content.match(/[A-Z][a-z]+\s[A-Z][a-z]+/g) || []).length >= 8,
+      'Name more specific entities (players, clubs, products) for grounding.'));
+
+    function scoreOf(arr) {
+      var passed = arr.filter(function(c){ return c.pass; }).length;
+      return Math.round((passed / arr.length) * 100);
+    }
+
+    res.json({
+      seo:  { score: scoreOf(seo), checks: seo },
+      geo:  { score: scoreOf(geo), checks: geo },
+      ai:   { score: scoreOf(ai),  checks: ai },
+      wordCount: wordCount,
+      h2Count: h2Count,
+      faqCount: faq.length
+    });
+
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+function check(label, pass, fix) {
+  return { label: label, pass: !!pass, fix: pass ? '' : fix };
+}
+
 app.post('/serp', async (req, res) => {
   const { keyword } = req.body;
   if (!keyword) return res.status(400).json({ error:'Missing keyword' });
@@ -355,8 +448,39 @@ function buildAffiliateBox(items) {
 
 /* ── Shared helpers ── */
 function adSlot(label) {
-  return '<div style="background:#0d0d0d;border:1px dashed #2E2E2E;text-align:center;font-family:monospace;font-size:9px;color:#333;letter-spacing:.12em;text-transform:uppercase;min-height:90px;display:flex;align-items:center;justify-content:center;margin:28px 0;max-width:720px;"><!-- ADSENSE:' + (label||'728x90') + ':paste code here --></div>';
+  return '';
 }
+
+function freshnessLine() {
+  var d = new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});
+  return '<div style="font-family:\'DM Mono\',monospace;font-size:11px;color:#888;margin-bottom:18px;padding-bottom:10px;border-bottom:1px solid #2E2E2E;">Updated ' + d + ' &middot; BSM Editorial Staff</div>';
+}
+
+function quickAnswerBox(text) {
+  if (!text) return '';
+  return '<div class="bsm-quick-answer" style="background:#111;border:1px solid #2E2E2E;border-left:4px solid #E8FF00;padding:16px 20px;margin:0 0 24px;max-width:720px;">'
+    + '<div style="font-family:\'DM Mono\',monospace;font-size:9px;color:#E8FF00;text-transform:uppercase;letter-spacing:.16em;margin-bottom:8px;">Quick Answer</div>'
+    + '<div style="font-family:\'Lora\',serif;font-size:17px;line-height:1.6;color:#F5F5F5;">' + text + '</div>'
+    + '</div>';
+}
+
+function takeawaysBox(items) {
+  if (!items || !items.length) return '';
+  return '<div class="bsm-takeaways" style="background:#111;border:1px solid #2E2E2E;border-top:3px solid #E8FF00;padding:18px 22px;margin:0 0 28px;max-width:720px;">'
+    + '<div style="font-family:\'Barlow Condensed\',sans-serif;font-size:18px;font-weight:800;text-transform:uppercase;color:#fff;margin-bottom:12px;">Key Takeaways</div>'
+    + '<ul style="margin:0;padding-left:20px;display:flex;flex-direction:column;gap:8px;">'
+    + items.slice(0,5).map(function(t){ return '<li style="font-family:\'Lora\',serif;font-size:15px;color:#C8C8C8;line-height:1.6;">' + escHtml(t) + '</li>'; }).join('')
+    + '</ul></div>';
+}
+
+function internalLinksBlock(links) {
+  if (!links || !links.length) return '';
+  return '<div class="bsm-related" style="background:#0d0d0d;border:1px solid #2E2E2E;padding:16px 20px;margin:28px 0;max-width:720px;">'
+    + '<div style="font-family:\'DM Mono\',monospace;font-size:9px;color:#E8FF00;text-transform:uppercase;letter-spacing:.16em;margin-bottom:10px;">Related Reading</div>'
+    + links.slice(0,4).map(function(l){ return '<div style="margin-bottom:6px;"><a href="#" style="font-family:\'Barlow Condensed\',sans-serif;font-size:16px;font-weight:600;color:#E8FF00;text-decoration:none;text-transform:uppercase;">' + escHtml(l) + ' &rarr;</a></div>'; }).join('')
+    + '</div>';
+}
+
 
 function bsmH2(text) {
   return '<h2 style="font-family:\'Barlow Condensed\',sans-serif;font-size:32px;font-weight:800;text-transform:uppercase;color:#FFFFFF;line-height:1;margin:40px 0 16px;padding-left:14px;border-left:3px solid #E8FF00;">' + escHtml(text) + '</h2>';
@@ -439,8 +563,8 @@ function buildNewsTemplate(parsed) {
     body += sections[0].paragraphs.map(bsmP).join('');
   }
 
-  // Ad slot 1 — top of content
-  body += adSlot('728x90:top');
+  // GEO/AI: quick answer box right after opening
+  body += quickAnswerBox(parsed.quickAnswer);
 
   // Remaining sections
   sections.slice(1).forEach(function(s, i) {
@@ -450,7 +574,8 @@ function buildNewsTemplate(parsed) {
     if (i === 1) body += adSlot('300x250:mid');
   });
 
-  // FAQ
+  // Internal cluster links + FAQ
+  body += internalLinksBlock(parsed.internalLinks);
   body += faqBlock(faq);
 
   // Speakable schema for AI assistants
@@ -468,6 +593,7 @@ function buildNewsTemplate(parsed) {
     + '<script type="application/ld+json">' + speakable + '<\/script>\n'
     + '<div class="bsm-article" itemscope itemtype="https://schema.org/NewsArticle">'
     + '<div class="bsm-breaking">Breaking</div>'
+    + freshnessLine()
     + '<div class="bsm-news-meta">'
     + '<span itemprop="datePublished" content="' + new Date().toISOString() + '">' + date + ' &mdash; ' + time + '</span>'
     + '<span itemprop="author" itemscope itemtype="https://schema.org/Organization"><span itemprop="name">BSM Editorial Staff</span></span>'
@@ -520,11 +646,13 @@ function buildPreviewTemplate(parsed) {
     + '<div class="bsm-vs">VS</div>'
     + '<div class="bsm-team"><div class="bsm-team-name">' + escHtml(team2) + '</div><div class="bsm-team-label">Away</div></div>'
     + '</div>'
+    + freshnessLine()
     + (sections[0] ? sections[0].paragraphs.map(bsmP).join('') : '')
-    + adSlot('728x90:top')
+    + quickAnswerBox(parsed.quickAnswer)
     + body
     + '<div class="bsm-prediction"><div><div class="bsm-prediction-label">BSM Score Prediction</div><div class="bsm-prediction-score">' + escHtml(team1.split(' ')[0]) + ' 2 &mdash; 1 ' + escHtml(team2.split(' ')[0]) + '</div></div></div>'
     + '<div class="bsm-nl-cta"><div><div class="bsm-nl-title">Get the Result Alert</div><div class="bsm-nl-sub">Free match result delivered to your inbox</div></div><a href="https://bestsportsmag.com/newsletter" class="bsm-nl-btn">Subscribe Free &rarr;</a></div>'
+    + internalLinksBlock(parsed.internalLinks)
     + faqBlock(faq)
     + '</div>';
 }
@@ -559,8 +687,9 @@ function buildGuideTemplate(parsed) {
   sections.forEach(function(s, i) {
     if (i === 0) {
       body += s.paragraphs.map(bsmP).join('');
+      body += quickAnswerBox(parsed.quickAnswer);
+      body += takeawaysBox(parsed.takeaways);
       body += toc;
-      body += adSlot('728x90:top');
       return;
     }
     var id = s.heading ? ('bsm-section-' + headingIdx++) : '';
@@ -570,11 +699,12 @@ function buildGuideTemplate(parsed) {
     if (i === 3) body += adSlot('300x250:mid');
   });
 
+  body += internalLinksBlock(parsed.internalLinks);
   body += faqBlock(faq);
 
   return '<style>' + BSM_BASE_CSS + '</style>\n'
     + articleSchema(parsed, 'guide')
-    + '<div class="bsm-article">' + body + '</div>';
+    + '<div class="bsm-article">' + freshnessLine() + body + '</div>';
 }
 
 /* ────────────────────────────────────────────────────────────────
@@ -591,7 +721,7 @@ function buildAnalysisTemplate(parsed) {
   sections.forEach(function(s, i) {
     if (i === 0) {
       body += s.paragraphs.map(bsmP).join('');
-      body += adSlot('728x90:top');
+      body += takeawaysBox(parsed.takeaways);
       return;
     }
     if (s.heading) body += bsmH2(s.heading);
@@ -608,6 +738,7 @@ function buildAnalysisTemplate(parsed) {
     if (i === 3) body += adSlot('300x250:mid');
   });
 
+  body += internalLinksBlock(parsed.internalLinks);
   body += faqBlock(faq);
 
   // Author bio
@@ -676,16 +807,16 @@ function buildListicleTemplate(parsed) {
   if (sections[0]) {
     body += sections[0].paragraphs.map(bsmP).join('');
   }
+  body += quickAnswerBox(parsed.quickAnswer);
   body += compTable;
-  body += adSlot('728x90:top');
 
   sections.slice(1).forEach(function(s, i) {
     if (s.heading) body += bsmH2(s.heading);
     body += s.paragraphs.map(bsmP).join('');
     if (i === 1 && aff.length > 0) body += buildAffiliateBox(aff);
-    if (i === 3) body += adSlot('300x250:mid');
   });
 
+  body += internalLinksBlock(parsed.internalLinks);
   body += faqBlock(faq);
 
   return '<style>' + BSM_BASE_CSS + '\n'
@@ -695,6 +826,7 @@ function buildListicleTemplate(parsed) {
     + itemListSchema
     + '<div class="bsm-article">'
     + '<div class="bsm-list-badge">Ranked List</div>'
+    + freshnessLine()
     + body
     + '<div class="bsm-disc">*Affiliate disclosure: BestSportsMag earns a commission on qualifying purchases via links on this page at no extra cost to you.</div>'
     + '</div>';
@@ -725,18 +857,21 @@ function buildReviewTemplate(parsed) {
   }) + '<\/script>\n';
 
   var body = '';
+  // Verdict box up top (GEO/AI extractable)
+  if (parsed.quickAnswer) {
+    body += '<div class="bsm-verdict"><div class="bsm-verdict-label">The Verdict</div><div class="bsm-verdict-text">' + parsed.quickAnswer + '</div></div>';
+  }
   sections.forEach(function(s, i) {
     if (i === 0) {
       body += s.paragraphs.map(bsmP).join('');
-      body += adSlot('728x90:top');
       return;
     }
     if (s.heading) body += bsmH2(s.heading);
     body += s.paragraphs.map(bsmP).join('');
-    if (i === 2) body += adSlot('300x250:mid');
     if (i === 3 && aff.length > 1) body += buildAffiliateBox(aff.slice(1));
   });
 
+  body += internalLinksBlock(parsed.internalLinks);
   body += faqBlock(faq);
 
   return '<style>' + BSM_BASE_CSS + '\n'
@@ -765,6 +900,7 @@ function buildReviewTemplate(parsed) {
     + '<a href="#" class="bsm-review-cta" rel="noopener sponsored">Get Best Price &rarr;</a>'
     + '<div class="bsm-disc" style="margin-top:8px">*Affiliate link &mdash; see price at retailer</div>'
     + '</div></div>'
+    + freshnessLine()
     + body
     + '<div class="bsm-disc">*Affiliate disclosure: BestSportsMag earns a commission on qualifying purchases at no extra cost to you.</div>'
     + '</div>';
@@ -789,7 +925,7 @@ function buildBSMHtml(parsed, articleType) {
 
 /* ── Article Parser ── */
 function parseArticle(rawText) {
-  const result = { title:'',slug:'',meta:'',sections:[],faq:[],tags:[],affiliateItems:[] };
+  const result = { title:'',slug:'',meta:'',sections:[],faq:[],tags:[],affiliateItems:[],quickAnswer:'',takeaways:[],internalLinks:[] };
   function cf(val) {
     if (!val) return '';
     return val.trim().replace(/\*\*/g,'').replace(/^[\[#\s\/]+|[\]\s\/]+$/g,'').trim();
@@ -804,6 +940,20 @@ function parseArticle(rawText) {
   }
   const cM=rawText.match(/CONTENT:\s*([\s\S]+)/);
   const content=cM?cM[1].trim():rawText;
+
+  // Extract QUICK ANSWER (GEO/AI optimization)
+  var qaM = rawText.match(/QUICK[_\s]?ANSWER:\s*(.+?)(?:\n\n|\n[A-Z]+:|$)/is);
+  if (qaM) result.quickAnswer = qaM[1].replace(/\*\*/g,'').trim();
+
+  // Extract KEY TAKEAWAYS (GEO/AI optimization)
+  var tkM = rawText.match(/(?:KEY[_\s]?)?TAKEAWAYS:\s*([\s\S]+?)(?:\n\n[A-Z]|\nCONTENT:|$)/i);
+  if (tkM) {
+    result.takeaways = tkM[1].split(/\n/).map(function(l){ return l.replace(/^[-*\d.\s]+/,'').replace(/\*\*/g,'').trim(); }).filter(function(l){ return l.length > 10; }).slice(0,5);
+  }
+
+  // Extract INTERNAL link suggestions from [INTERNAL: ...] markers
+  var intMatches = [...content.matchAll(/\[INTERNAL:\s*([^\]]+)\]/gi)];
+  result.internalLinks = intMatches.map(function(m){ return m[1].trim(); }).slice(0,4);
 
   // FAQ — robust multi-format parser
   // Handles: **Q:**/**A:**, Q:/A:, plain Q/A, with or without ## heading
@@ -1008,11 +1158,22 @@ app.post('/generate', async (req, res) => {
       '=== STRUCTURE ===',
       '- Opening paragraph: the single most important fact about this topic right now.',
       '- Second paragraph: context that makes the first paragraph more significant.',
+      '',
+      '=== REQUIRED OUTPUT BLOCKS (for SEO, GEO, and AI search) ===',
+      '- QUICK ANSWER: After TITLE/SLUG/META/TAGS, output a line starting with "QUICK ANSWER:" followed by',
+      '  a single 1-2 sentence direct answer to the main query. This is what Google AI Overviews and ChatGPT cite.',
+      '  Make it self-contained, factual, and specific. Example: "QUICK ANSWER: France and Spain are the 2026',
+      '  World Cup favourites, with Kylian Mbappe leading Golden Ball odds and Harry Kane the Golden Boot pick."',
+      '- KEY TAKEAWAYS: Then output "KEY TAKEAWAYS:" followed by 3-5 bullet lines (each starting with -),',
+      '  each a self-contained factual statement an AI engine could quote directly.',
+      '- These two blocks are MANDATORY. They power GEO and AI-search citation.',
       '- H2 sections: each must have a specific keyword-rich heading — not vague titles.',
       '  Good: "Why Messi Absence Changes Argentina World Cup Tactics"',
       '  Bad: "Key Players to Watch"',
       '- Each H2 section: minimum 3 paragraphs, each adding distinct information.',
       '- No padding. If a section runs out of substance, end it — do not repeat.',
+      '- Use keyword-rich H2 headings that match real search queries (include player names, "odds", "predictions", year).',
+      '- Where you compare items (players, teams, products, prices), present them so a table can be built from them.',
       '',
       '=== BSM EDITORIAL RULES ===',
       '- World Cup 2026 coverage: always mention specific host cities (USA, Canada, Mexico).',
@@ -1103,7 +1264,7 @@ app.post('/generate', async (req, res) => {
 
     res.json({
       content:[{type:'text',text:rawText}],
-      bsm:{ title:parsed.title, slug:parsed.slug, meta:parsed.meta, html:bsmHtml, raw:rawText, tags:parsed.tags, faq:parsed.faq, faqCount:parsed.faq.length, sectionCount:parsed.sections.length, articleType:articleType, searchSource:search.source, searchResults:search.resultsCount },
+      bsm:{ title:parsed.title, slug:parsed.slug, meta:parsed.meta, html:bsmHtml, raw:rawText, tags:parsed.tags, faq:parsed.faq, faqCount:parsed.faq.length, sectionCount:parsed.sections.length, articleType:articleType, quickAnswer:parsed.quickAnswer, takeaways:parsed.takeaways, internalLinks:parsed.internalLinks, searchSource:search.source, searchResults:search.resultsCount },
       qa:{
         serpResultsUsed: search.resultsCount || 0,
         serpSource:      search.source || 'none',
@@ -1122,4 +1283,4 @@ app.post('/generate', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log('TrendBlog AI Proxy v5.4.0 running on port ' + PORT));
+app.listen(PORT, () => console.log('TrendBlog AI Proxy v6.0.0 running on port ' + PORT));
