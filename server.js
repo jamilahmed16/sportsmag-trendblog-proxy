@@ -9,7 +9,7 @@ app.use(cors({ origin:'*', methods:['POST','GET','OPTIONS'], allowedHeaders:['Co
 app.use(express.json({ limit:'10mb' }));
 
 app.get('/', (req, res) => {
-  res.json({ status:'TrendBlog AI Proxy is running', version:'6.0.0' });
+  res.json({ status:'TrendBlog AI Proxy is running', version:'6.1.0' });
 });
 
 /* ================================================================
@@ -325,6 +325,61 @@ app.post('/score', (req, res) => {
 function check(label, pass, fix) {
   return { label: label, pass: !!pass, fix: pass ? '' : fix };
 }
+
+
+/* ================================================================
+   ENDPOINT /fix-section — surgical content fix
+   Takes the article + ONE weakness, rewrites only what is needed.
+   Never regenerates the whole article.
+   ================================================================ */
+app.post('/fix-section', async (req, res) => {
+  try {
+    var content = req.body.content || '';
+    var weakness = req.body.weakness || '';
+    var topic = req.body.topic || '';
+    if (!content || !weakness) return res.status(400).json({ error:'Missing content or weakness' });
+
+    var apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) return res.status(500).json({ error:'API key not set' });
+
+    var sys = 'You are a precise sports-article editor for BestSportsMag. '
+      + 'You will be given an article and ONE specific weakness to fix. '
+      + 'Return the COMPLETE article with ONLY that weakness addressed. '
+      + 'Do not rewrite or restructure anything else. Preserve every existing sentence, heading, FAQ, '
+      + 'affiliate marker, and internal link exactly as-is unless it directly relates to the fix. '
+      + 'Keep the same markdown format (## headings, **Q:**/**A:** FAQs). '
+      + 'Output only the article text, no commentary.';
+
+    var fixGuide = {
+      'Named entities': 'Add more specific named people, teams, clubs, and places throughout. Use real full names.',
+      'Source attribution': 'Add attribution phrases (according to, reported by, confirmed by) to key factual claims.',
+      'Definitional clarity': 'Add a clear definitional sentence near the top using the pattern "X is Y".',
+      'Specific numbers/stats': 'Add more specific numbers, dates, scores, and statistics to existing paragraphs.',
+      'Extractable claims': 'Rephrase key facts into self-contained, quotable claims with numbers.',
+      'Direct-answer opening': 'Rewrite the opening so the first sentence directly answers the main query with a fact.'
+    };
+    var guide = fixGuide[weakness] || ('Address this specific issue: ' + weakness);
+
+    var userMsg = 'TOPIC: ' + topic + '\n\n'
+      + 'WEAKNESS TO FIX: ' + weakness + '\n'
+      + 'HOW TO FIX: ' + guide + '\n\n'
+      + 'Return the full article below with only this fix applied:\n\n' + content;
+
+    var response = await fetch('https://api.anthropic.com/v1/messages', {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'x-api-key':apiKey, 'anthropic-version':'2023-06-01' },
+      body:JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:8000, system:sys, messages:[{role:'user',content:userMsg}] })
+    });
+    var data = await response.json();
+    if (!response.ok) return res.status(response.status).json({ error: data.error ? data.error.message : 'API error' });
+
+    var fixed = data.content[0].text;
+    res.json({ content: fixed, weakness: weakness });
+
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.post('/serp', async (req, res) => {
   const { keyword } = req.body;
@@ -1283,4 +1338,4 @@ app.post('/generate', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log('TrendBlog AI Proxy v6.0.0 running on port ' + PORT));
+app.listen(PORT, () => console.log('TrendBlog AI Proxy v6.1.0 running on port ' + PORT));
