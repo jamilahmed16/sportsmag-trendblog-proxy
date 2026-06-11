@@ -9,7 +9,7 @@ app.use(cors({ origin:'*', methods:['POST','GET','OPTIONS'], allowedHeaders:['Co
 app.use(express.json({ limit:'10mb' }));
 
 app.get('/', (req, res) => {
-  res.json({ status:'TrendBlog AI Proxy is running', version:'5.3.0' });
+  res.json({ status:'TrendBlog AI Proxy is running', version:'5.3.1' });
 });
 
 /* ================================================================
@@ -346,36 +346,6 @@ function buildAffiliateBox(items) {
     +'</div>\n';
 }
 
-function buildFaqHtml(faqItems) {
-  if (!faqItems || !faqItems.length) return '';
-  var showItems = faqItems.slice(0, 7);
-  var itemsHtml = showItems.map(function(item) {
-    var q = (item.q||'').replace(/\*\*/g,'').trim();
-    var a = (item.a||'').replace(/\*\*/g,'').trim();
-    return '<div itemscope itemprop="mainEntity" itemtype="https://schema.org/Question" style="border-bottom:1px solid #2E2E2E;">'
-      + '<div style="padding:16px 20px;background:#111111;">'
-      + '<strong style="font-size:17px;font-weight:700;text-transform:uppercase;color:#E8FF00;display:block;margin-bottom:10px;" itemprop="name">' + escHtml(q) + '</strong>'
-      + '<div itemscope itemprop="acceptedAnswer" itemtype="https://schema.org/Answer">'
-      + '<div itemprop="text" style="font-size:15px;color:#C8C8C8;line-height:1.75;">' + escHtml(a) + '</div>'
-      + '</div></div></div>';
-  }).join('');
-  var schemaData = {
-    '@context': 'https://schema.org', '@type': 'FAQPage',
-    'mainEntity': showItems.map(function(item) {
-      return { '@type':'Question', 'name':(item.q||'').replace(/\*\*/g,'').trim(),
-        'acceptedAnswer':{'@type':'Answer','text':(item.a||'').replace(/\*\*/g,'').trim()} };
-    })
-  };
-  var speakableData = {
-    '@context':'https://schema.org','@type':'WebPage',
-    'speakable':{'@type':'SpeakableSpecification','cssSelector':['.bsm-faq-wrap']}
-  };
-  return '\n<script type="application/ld+json">' + JSON.stringify(schemaData) + '<\/script>'
-    + '<script type="application/ld+json">' + JSON.stringify(speakableData) + '<\/script>'
-    + '<div class="bsm-faq-wrap" itemscope itemtype="https://schema.org/FAQPage" style="max-width:720px;margin:40px 0;border:1px solid #2E2E2E;overflow:hidden;">'
-    + '<div style="font-size:22px;font-weight:800;text-transform:uppercase;color:#FFFFFF;padding:16px 20px;background:#1A1A1A;border-bottom:2px solid #E8FF00;">Frequently Asked Questions</div>'
-    + itemsHtml + '</div>\n';
-}
 
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1109,4 +1079,4 @@ app.post('/generate', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log('TrendBlog AI Proxy v5.3 running on port ' + PORT));
+app.listen(PORT, () => console.log('TrendBlog AI Proxy v5.3.1 running on port ' + PORT));
