@@ -9,7 +9,7 @@ app.use(cors({ origin:'*', methods:['POST','GET','OPTIONS'], allowedHeaders:['Co
 app.use(express.json({ limit:'10mb' }));
 
 app.get('/', (req, res) => {
-  res.json({ status:'TrendBlog AI Proxy is running', version:'5.3.1' });
+  res.json({ status:'TrendBlog AI Proxy is running', version:'5.4.0' });
 });
 
 /* ================================================================
@@ -992,12 +992,17 @@ app.post('/generate', async (req, res) => {
       '- Any sentence that contains no specific fact, name, score, or date.',
       '',
       '=== FACTS AND ACCURACY ===',
-      '- If reference URLs are provided: treat them as PRIMARY source.',
-      '  Extract specific facts, quotes, stats, and dates from them.',
-      '  Every factual claim must be traceable to a reference or the SERP context.',
-      '- If SERP context is provided: use it as MANDATORY supporting material.',
-      '  Do not ignore it. Do not replace it with training data.',
-      '- If neither is available: state uncertainty explicitly rather than fabricating.',
+      '- You may be given up to THREE research inputs: SERP results, People Also Ask (PAA), and Reference URLs.',
+      '- ALL provided inputs are valid, high-quality sources. None outranks another. Read and use every one.',
+      '- SERP results: tell you what ranks, how competitors frame the topic, and which subtopics matter.',
+      '- PAA questions: tell you exactly what real readers want answered.',
+      '- Reference URLs: give you specific facts, quotes, stats, dates, and depth.',
+      '- SYNTHESISE across every source provided. Combine their semantic signals into one coherent article.',
+      '- Extract specific facts, names, numbers, dates, and quotes from whatever sources are present.',
+      '- Every factual claim must be traceable to one of the provided sources — not training data.',
+      '- If only SERP+PAA are given (no reference URLs): use SERP and PAA fully — do not wait for references.',
+      '- If all three are given: weave facts from references, framing from SERP, and questions from PAA together.',
+      '- If no sources are available: state uncertainty explicitly rather than fabricating.',
       '- Never invent: squad numbers, transfer fees, scores, injury details, quotes.',
       '',
       '=== STRUCTURE ===',
@@ -1015,6 +1020,14 @@ app.post('/generate', async (req, res) => {
       '- Match previews: always include recent form (last 5 matches) if available in context.',
       '- Gear reviews: always include specific price, exact model name, one real competitor.',
       '- Rankings/lists: each item must have a specific reason — not "because they are talented".',
+      '',
+      '=== SEMANTIC SYNTHESIS (how to use the research) ===',
+      '- Before writing, identify the key entities, subtopics, and terminology shared across the sources.',
+      '- Mirror the vocabulary that ranking pages and PAA questions use — this is your SEO signal.',
+      '- Cover the subtopics that appear across multiple SERP results; readers and Google expect them.',
+      '- Answer the intent behind the PAA questions inside the body, not only in the FAQ.',
+      '- Pull concrete facts (names, fees, dates, scores) from reference URLs and place them precisely.',
+      '- The finished article should read as if written by an expert who read every source and synthesised them.',
       '',
       '=== FAQ RULES ===',
       '- Use the People Also Ask questions provided — do not invent questions.',
@@ -1036,22 +1049,42 @@ app.post('/generate', async (req, res) => {
         + '\n- Do NOT use numbered lists or any other format'
         + '\n- FAQ section must start with: ## Frequently Asked Questions';
     }
+    // ── Assemble research context: SERP -> PAA -> Reference URLs ──
+    // All sources are equal-weight. Claude must synthesise across every one provided.
+    var sourcesGiven = [];
+
     if (search.resultsCount > 0) {
-      sys += refCtx;
-      sys += paaCtx;
-      sys += '\n\n=== CURRENT NEWS CONTEXT (from '+search.source+') ===\n\n'
+      sys += '\n\n=== SERP COMPETITIVE LANDSCAPE (from '+search.source+') ==='
+        + '\nThis shows what currently ranks and how competitors frame the topic. Use it for subtopics, framing, and terminology.\n\n'
         + search.context
-        + '\n\n=== END CONTEXT ===\n\n'
-        + 'RULES:\n'
-        + '1. Use the context above as your PRIMARY factual source\n'
-        + '2. Only include facts present in the context — do not invent statistics, squad names, scores or quotes\n'
-        + '3. Write around any missing detail rather than fabricating it\n'
-        + '4. Current date: ' + new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});
-    } else {
-      sys += refCtx;
+        + '\n=== END SERP LANDSCAPE ===';
+      sourcesGiven.push('SERP (' + search.resultsCount + ' results)');
+    }
+
+    if (paaCtx) {
       sys += paaCtx;
+      sourcesGiven.push('PAA (' + paaData.length + ' questions)');
+    }
+
+    if (refCtx) {
+      sys += refCtx;
+      sourcesGiven.push('Reference URLs');
+    }
+
+    // ── Synthesis directive — always appended last, closest to the user prompt ──
+    if (sourcesGiven.length > 0) {
+      sys += '\n\n=== HOW TO USE THESE SOURCES ==='
+        + '\nYou have been given these research inputs: ' + sourcesGiven.join(', ') + '.'
+        + '\n- Read and use ALL of them. They are equally valid. None overrides another.'
+        + '\n- Synthesise their combined semantics: SERP for framing and subtopics, PAA for reader intent, references for specific facts.'
+        + '\n- Every statistic, name, date, score, and quote must come from these sources — never invent.'
+        + '\n- If sources conflict on a fact, mention both rather than guessing.'
+        + '\n- Cover the subtopics and answer the questions that appear across these sources.'
+        + '\n- Current date: ' + new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'})
+        + '\n=== END ===';
+    } else {
       sys += '\n\nCurrent date: ' + new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'})
-        + '\nNote: live search unavailable — use training knowledge carefully and avoid fabricating specifics.';
+        + '\nNote: no live research available — use training knowledge carefully and avoid fabricating specifics.';
     }
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -1070,7 +1103,17 @@ app.post('/generate', async (req, res) => {
 
     res.json({
       content:[{type:'text',text:rawText}],
-      bsm:{ title:parsed.title, slug:parsed.slug, meta:parsed.meta, html:bsmHtml, raw:rawText, tags:parsed.tags, faq:parsed.faq, faqCount:parsed.faq.length, sectionCount:parsed.sections.length, articleType:articleType, searchSource:search.source, searchResults:search.resultsCount }
+      bsm:{ title:parsed.title, slug:parsed.slug, meta:parsed.meta, html:bsmHtml, raw:rawText, tags:parsed.tags, faq:parsed.faq, faqCount:parsed.faq.length, sectionCount:parsed.sections.length, articleType:articleType, searchSource:search.source, searchResults:search.resultsCount },
+      qa:{
+        serpResultsUsed: search.resultsCount || 0,
+        serpSource:      search.source || 'none',
+        paaUsed:         (paaData || []).length,
+        paaQuestions:    (paaData || []).map(function(p){ return p.q; }),
+        refSourcesUsed:  (refContent || []).filter(function(r){ return r.text && r.text.length > 50; }).length,
+        refUrls:         (refContent || []).map(function(r){ return { url:r.url, chars:(r.text||'').length, ok:!!(r.text && r.text.length > 50) }; }),
+        systemPromptChars: sys.length,
+        sourcesGiven:    sourcesGiven
+      }
     });
 
   } catch(error) {
@@ -1079,4 +1122,4 @@ app.post('/generate', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log('TrendBlog AI Proxy v5.3.1 running on port ' + PORT));
+app.listen(PORT, () => console.log('TrendBlog AI Proxy v5.4.0 running on port ' + PORT));
