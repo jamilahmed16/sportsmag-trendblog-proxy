@@ -9,7 +9,7 @@ app.use(cors({ origin:'*', methods:['POST','GET','OPTIONS'], allowedHeaders:['Co
 app.use(express.json({ limit:'10mb' }));
 
 app.get('/', (req, res) => {
-  res.json({ status:'TrendBlog AI Proxy is running', version:'6.1.0' });
+  res.json({ status:'TrendBlog AI Proxy is running', version:'6.2.0' });
 });
 
 /* ================================================================
@@ -368,7 +368,7 @@ app.post('/fix-section', async (req, res) => {
     var response = await fetch('https://api.anthropic.com/v1/messages', {
       method:'POST',
       headers:{ 'Content-Type':'application/json', 'x-api-key':apiKey, 'anthropic-version':'2023-06-01' },
-      body:JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:8000, system:sys, messages:[{role:'user',content:userMsg}] })
+      body:JSON.stringify({ model:'claude-sonnet-4-6', max_tokens:8000, system:sys, messages:[{role:'user',content:userMsg}] })
     });
     var data = await response.json();
     if (!response.ok) return res.status(response.status).json({ error: data.error ? data.error.message : 'API error' });
@@ -378,6 +378,83 @@ app.post('/fix-section', async (req, res) => {
 
   } catch(e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+
+/* ================================================================
+   ENDPOINT /dfseo — DataforSEO keyword + SERP competitor analysis
+   Returns keyword difficulty, volume, and competitor content data.
+   Requires env: DATAFORSEO_LOGIN, DATAFORSEO_PASSWORD
+   ================================================================ */
+app.post('/dfseo', async (req, res) => {
+  var login = process.env.DATAFORSEO_LOGIN;
+  var password = process.env.DATAFORSEO_PASSWORD;
+  var keyword = (req.body.keyword || '').trim();
+
+  if (!login || !password) {
+    return res.json({ enabled: false, note: 'DataforSEO credentials not set in environment' });
+  }
+  if (!keyword) return res.status(400).json({ error: 'Missing keyword' });
+
+  var auth = 'Basic ' + Buffer.from(login + ':' + password).toString('base64');
+
+  try {
+    // 1. Keyword difficulty + search volume (Labs endpoint)
+    var kdBody = [{ keywords: [keyword], location_code: 2840, language_code: 'en' }];
+    var kdResp = await fetch('https://api.dataforseo.com/v3/dataforseo_labs/google/bulk_keyword_difficulty/live', {
+      method: 'POST',
+      headers: { 'Authorization': auth, 'Content-Type': 'application/json' },
+      body: JSON.stringify(kdBody)
+    });
+    var kdData = await kdResp.json();
+
+    var difficulty = null, volume = null;
+    try {
+      var kdItems = kdData.tasks[0].result[0].items;
+      if (kdItems && kdItems[0]) difficulty = kdItems[0].keyword_difficulty;
+    } catch(e) {}
+
+    // 2. Search volume (Keywords Data endpoint)
+    var svBody = [{ keywords: [keyword], location_code: 2840, language_code: 'en' }];
+    var svResp = await fetch('https://api.dataforseo.com/v3/keywords_data/google_ads/search_volume/live', {
+      method: 'POST',
+      headers: { 'Authorization': auth, 'Content-Type': 'application/json' },
+      body: JSON.stringify(svBody)
+    });
+    var svData = await svResp.json();
+    try {
+      var svItems = svData.tasks[0].result;
+      if (svItems && svItems[0]) volume = svItems[0].search_volume;
+    } catch(e) {}
+
+    // 3. SERP competitors (organic results) for content-gap
+    var serpBody = [{ keyword: keyword, location_code: 2840, language_code: 'en', depth: 10 }];
+    var serpResp = await fetch('https://api.dataforseo.com/v3/serp/google/organic/live/regular', {
+      method: 'POST',
+      headers: { 'Authorization': auth, 'Content-Type': 'application/json' },
+      body: JSON.stringify(serpBody)
+    });
+    var serpData = await serpResp.json();
+    var competitors = [];
+    try {
+      var items = serpData.tasks[0].result[0].items || [];
+      competitors = items.filter(function(it){ return it.type === 'organic'; }).slice(0, 10).map(function(it) {
+        return { title: it.title || '', url: it.url || '', domain: it.domain || '', position: it.rank_absolute || 0 };
+      });
+    } catch(e) {}
+
+    res.json({
+      enabled: true,
+      keyword: keyword,
+      difficulty: difficulty,
+      volume: volume,
+      competitors: competitors,
+      competitorCount: competitors.length
+    });
+
+  } catch(e) {
+    res.json({ enabled: true, error: e.message });
   }
 });
 
@@ -1306,7 +1383,7 @@ app.post('/generate', async (req, res) => {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method:'POST',
       headers:{ 'Content-Type':'application/json', 'x-api-key':apiKey, 'anthropic-version':'2023-06-01' },
-      body:JSON.stringify({ model:model||'claude-sonnet-4-20250514', max_tokens:max_tokens||8000, system:sys, messages:[{role:'user',content:prompt}] })
+      body:JSON.stringify({ model:model||'claude-sonnet-4-6', max_tokens:max_tokens||8000, system:sys, messages:[{role:'user',content:prompt}] })
     });
 
     const data = await response.json();
@@ -1338,4 +1415,4 @@ app.post('/generate', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log('TrendBlog AI Proxy v6.1.0 running on port ' + PORT));
+app.listen(PORT, () => console.log('TrendBlog AI Proxy v6.2.0 running on port ' + PORT));
